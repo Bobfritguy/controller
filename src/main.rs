@@ -2,9 +2,10 @@
 
 use std::io::ErrorKind;
 use eframe::egui;
-use eframe::egui::Key;
-use egui_extras;
 use std::net::UdpSocket;
+
+
+const SERVO_ANGLE: u32 = 180;
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -15,7 +16,7 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "Robotic Limb Controller",
         options,
-        Box::new(|cc| {
+        Box::new(|_cc| {
             Box::<Controller>::default()
         }),
     )
@@ -35,7 +36,8 @@ struct Controller {
     is_ip_addr: bool,
     send_to: String,
     udp_socket: UdpSocket,
-    servo_pos: u32,
+    servo_shoulder_pos: u32,
+    servo_top_pos: u32,
     stepper_pos: i32,
     send_vec: Vec<u8>,
     receive_vec: Vec<u8>,
@@ -46,7 +48,7 @@ struct Controller {
 impl Default for Controller {
     fn default() -> Self {
         // Create and configure the UdpSocket
-        let mut udp_socket = UdpSocket::bind("0.0.0.0:8080").expect("Failed to bind socket");
+        let udp_socket = UdpSocket::bind("0.0.0.0:8080").expect("Failed to bind socket");
         udp_socket.set_nonblocking(true).expect("Failed to set nonblocking");
 
         // Create the Controller with the configured UdpSocket
@@ -54,8 +56,9 @@ impl Default for Controller {
             ip_addr_string: "0.0.0.0:1234".to_owned(),
             is_ip_addr: true,
             send_to: "0.0.0.0:1234".to_owned(),
-            udp_socket: udp_socket,
-            servo_pos: 0,
+            udp_socket,
+            servo_shoulder_pos: 0,
+            servo_top_pos: 0,
             stepper_pos: 0,
             send_vec: Vec::new(),
             receive_vec: Vec::new(),
@@ -116,19 +119,35 @@ impl eframe::App for Controller {
 
                         if self.send {
                             ui.horizontal(|ui| {
-                                ui.add(egui::Slider::new(&mut self.servo_pos, 0..=180).text("Servo Position"));
+                                ui.add(egui::Slider::new(&mut self.servo_shoulder_pos, 0..=SERVO_ANGLE).text("Servo Shoulder Position"));
                                 if ui.button("Move back a degree").clicked() {
-                                    if self.servo_pos > 0 {
-                                        self.servo_pos -= 1;
+                                    if self.servo_shoulder_pos > 0 {
+                                        self.servo_shoulder_pos -= 1;
                                     }
                                 }
                                 if ui.button("Move forward a degree").clicked() {
-                                    if self.servo_pos < 180 {
-                                        self.servo_pos += 1;
+                                    if self.servo_shoulder_pos < SERVO_ANGLE {
+                                        self.servo_shoulder_pos += 1;
                                     }
                                 }
 
                             });
+
+                            ui.horizontal(|ui| {
+                                ui.add(egui::Slider::new(&mut self.servo_top_pos, 0..=SERVO_ANGLE).text("Servo Top Position"));
+                                if ui.button("Move back a degree").clicked() {
+                                    if self.servo_top_pos > 0 {
+                                        self.servo_top_pos -= 1;
+                                    }
+                                }
+                                if ui.button("Move forward a degree").clicked() {
+                                    if self.servo_top_pos < SERVO_ANGLE {
+                                        self.servo_top_pos += 1;
+                                    }
+                                }
+
+                            });
+
                             ui.horizontal(|ui| {
                                 ui.add(egui::DragValue::new(&mut self.stepper_pos).speed(1.0).clamp_range(-1000..=1000).prefix("Stepper Position: "));
                                 if ui.button("Step Counter-Clockwise").clicked() {
@@ -141,7 +160,10 @@ impl eframe::App for Controller {
                             // Send the data
                             self.send_vec.clear();
                             self.send_vec.push(0);
-                            self.send_vec.push(self.servo_pos as u8);
+                            self.send_vec.push((self.servo_shoulder_pos >> 8) as u8);
+                            self.send_vec.push(self.servo_shoulder_pos as u8);
+                            self.send_vec.push((self.servo_top_pos >> 8) as u8);
+                            self.send_vec.push(self.servo_top_pos as u8);
                             self.send_vec.push((self.stepper_pos >> 24) as u8);
                             self.send_vec.push((self.stepper_pos >> 16) as u8);
                             self.send_vec.push((self.stepper_pos >> 8) as u8);
@@ -151,8 +173,8 @@ impl eframe::App for Controller {
 
                             let mut buf = [0u8; 1024]; // You can use a fixed-size array as buffer
 
-                            match self.udp_socket.recv_from(&mut buf) {
-                                Ok((amt, src)) => {
+                            match self.udp_socket.recv_from(&mut buf) {192.168.
+                                Ok((amt, _src)) => {
                                     // Received data
                                     self.receive_vec.clear();
                                     self.receive_vec.extend_from_slice(&buf[0..amt]);
@@ -170,6 +192,8 @@ impl eframe::App for Controller {
 
                             if self.receive_vec.len() > 0 {
                                 // make a string of all the elements of the vec
+                                // Combine the two received bytes into a u16
+                                // let vec_num = [self.receive_vec[0] as u16];
                                 let vec_string = self.receive_vec.iter().map(|b| format!("{}", b)).collect::<Vec<_>>().join(" ");
                                 ui.label(format!("Received {} from {}", vec_string, self.send_to));
                             } else {
@@ -215,9 +239,7 @@ fn check_ip_string(ip_string: &String) -> bool{
 
     let _: u16 = match port.parse() {
         Ok(n) => {
-            if n >  65535 {
-                return false;
-            } else if n < 1{
+            if n < 1{
                 return false;
             }
             n
@@ -233,8 +255,8 @@ fn check_ip_string(ip_string: &String) -> bool{
 
     // Convert the octets to u8
     for octet in octets {
-        let octet_u8: u8 = match octet.parse() {
-            Ok(n) => n,
+        match octet.parse::<u8>() {
+            Ok(_) =>  continue,
             Err(_) => return false,
         };
     }
@@ -244,8 +266,7 @@ fn check_ip_string(ip_string: &String) -> bool{
 
 
 
-/// Here is the same code again, but a bit more compact:
-#[allow(dead_code)]
+// Code for egui toggle switch.
 fn toggle_ui(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let desired_size = ui.spacing().interact_size.y * egui::vec2(2.0, 1.0);
     let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
