@@ -173,7 +173,7 @@ impl eframe::App for Controller {
 
                             let mut buf = [0u8; 1024]; // You can use a fixed-size array as buffer
 
-                            match self.udp_socket.recv_from(&mut buf) {192.168.
+                            match self.udp_socket.recv_from(&mut buf) {
                                 Ok((amt, _src)) => {
                                     // Received data
                                     self.receive_vec.clear();
