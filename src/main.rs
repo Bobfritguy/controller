@@ -3,9 +3,14 @@
 use std::io::ErrorKind;
 use eframe::egui;
 use std::net::UdpSocket;
+use byteorder::{ByteOrder, LittleEndian};
 
+const SERVO_TOP: u16 = 180;
+const SERVO_SHOULDER: u16 = 180;
+const SERVO_UPPER: u16 = 180;
+const SERVO_ELBOW: u16 = 180;
+const SERVO_LOWER: u16 = 180;
 
-const SERVO_ANGLE: u32 = 180;
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -36,13 +41,16 @@ struct Controller {
     is_ip_addr: bool,
     send_to: String,
     udp_socket: UdpSocket,
-    servo_shoulder_pos: u32,
-    servo_top_pos: u32,
-    stepper_pos: i32,
+    servo_top: u16,
+    servo_shoulder: u16,
+    servo_upper: u16,
+    servo_elbow: u16,
+    servo_lower: u16,
     send_vec: Vec<u8>,
     receive_vec: Vec<u8>,
     mode: Mode,
     send: bool,
+    flag: bool,
 }
 
 impl Default for Controller {
@@ -57,13 +65,16 @@ impl Default for Controller {
             is_ip_addr: true,
             send_to: "0.0.0.0:1234".to_owned(),
             udp_socket,
-            servo_shoulder_pos: 0,
-            servo_top_pos: 0,
-            stepper_pos: 0,
+            servo_top: 0,
+            servo_shoulder: 0,
+            servo_upper: 0,
+            servo_elbow: 0,
+            servo_lower: 0,
             send_vec: Vec::new(),
             receive_vec: Vec::new(),
             mode: Mode::Stopped,
             send: false,
+            flag: true,
         }
 
     }
@@ -119,60 +130,138 @@ impl eframe::App for Controller {
 
                         if self.send {
                             ui.horizontal(|ui| {
-                                ui.add(egui::Slider::new(&mut self.servo_shoulder_pos, 0..=SERVO_ANGLE).text("Servo Shoulder Position"));
+                                flag_setting_slider(
+                                    ui,
+                                    &mut self.servo_shoulder,
+                                    0..=SERVO_SHOULDER,
+                                    "Servo Shoulder Position",
+                                    &mut self.flag,
+                                );
                                 if ui.button("Move back a degree").clicked() {
-                                    if self.servo_shoulder_pos > 0 {
-                                        self.servo_shoulder_pos -= 1;
+                                    if self.servo_shoulder > 0 {
+                                        self.servo_shoulder -= 1;
+                                        self.flag = true;
                                     }
                                 }
                                 if ui.button("Move forward a degree").clicked() {
-                                    if self.servo_shoulder_pos < SERVO_ANGLE {
-                                        self.servo_shoulder_pos += 1;
+                                    if self.servo_shoulder < SERVO_SHOULDER {
+                                        self.servo_shoulder += 1;
+                                        self.flag = true;
                                     }
                                 }
 
                             });
 
                             ui.horizontal(|ui| {
-                                ui.add(egui::Slider::new(&mut self.servo_top_pos, 0..=SERVO_ANGLE).text("Servo Top Position"));
+                                flag_setting_slider(
+                                    ui,
+                                    &mut self.servo_top,
+                                    0..=SERVO_TOP,
+                                    "Servo Top Position",
+                                    &mut self.flag,
+                                );
                                 if ui.button("Move back a degree").clicked() {
-                                    if self.servo_top_pos > 0 {
-                                        self.servo_top_pos -= 1;
+                                    if self.servo_top > 0 {
+                                        self.servo_top -= 1;
+                                        self.flag = true;
                                     }
                                 }
                                 if ui.button("Move forward a degree").clicked() {
-                                    if self.servo_top_pos < SERVO_ANGLE {
-                                        self.servo_top_pos += 1;
+                                    if self.servo_top < SERVO_TOP {
+                                        self.servo_top += 1;
+                                        self.flag = true;
                                     }
                                 }
 
                             });
 
                             ui.horizontal(|ui| {
-                                ui.add(egui::DragValue::new(&mut self.stepper_pos).speed(1.0).clamp_range(-1000..=1000).prefix("Stepper Position: "));
-                                if ui.button("Step Counter-Clockwise").clicked() {
-                                    self.stepper_pos -= 1;
+                                flag_setting_slider(
+                                    ui,
+                                    &mut self.servo_upper,
+                                    0..=SERVO_UPPER,
+                                    "Servo Upper Position",
+                                    &mut self.flag,
+                                );
+                                if ui.button("Move back a degree").clicked() {
+                                    if self.servo_upper > 0 {
+                                        self.servo_upper -= 1;
+                                        self.flag = true;
+                                    }
                                 }
-                                if ui.button("Step Clockwise").clicked() {
-                                    self.stepper_pos += 1;
+                                if ui.button("Move forward a degree").clicked() {
+                                    if self.servo_upper < SERVO_UPPER {
+                                        self.servo_upper += 1;
+                                        self.flag = true;
+                                    }
+                                }
+
+                            });
+
+                            ui.horizontal(|ui| {
+                                flag_setting_slider(
+                                    ui,
+                                    &mut self.servo_elbow,
+                                    0..=SERVO_ELBOW,
+                                    "Servo Elbow Position",
+                                    &mut self.flag,
+                                );
+                                if ui.button("Move back a degree").clicked() {
+                                    if self.servo_elbow > 0 {
+                                        self.servo_elbow -= 1;
+                                        self.flag = true;
+                                    }
+                                }
+                                if ui.button("Move forward a degree").clicked() {
+                                    if self.servo_elbow < SERVO_ELBOW {
+                                        self.servo_elbow += 1;
+                                        self.flag = true;
+                                    }
+                                }
+
+                            });
+
+                            ui.horizontal(|ui| {
+                                flag_setting_slider(
+                                    ui,
+                                    &mut self.servo_lower,
+                                    0..=SERVO_LOWER,
+                                    "Servo Lower Position",
+                                    &mut self.flag,
+                                );
+                                if ui.button("Move back a degree").clicked() {
+                                    if self.servo_lower > 0 {
+                                        self.servo_lower -= 1;
+                                        self.flag = true;
+                                    }
+                                }
+                                if ui.button("Move forward a degree").clicked() {
+                                    if self.servo_lower < SERVO_LOWER {
+                                        self.servo_lower += 1;
+                                        self.flag = true;
+                                    }
                                 }
                             });
-                            // Send the data
-                            self.send_vec.clear();
-                            self.send_vec.push(0);
-                            self.send_vec.push((self.servo_shoulder_pos >> 8) as u8);
-                            self.send_vec.push(self.servo_shoulder_pos as u8);
-                            self.send_vec.push((self.servo_top_pos >> 8) as u8);
-                            self.send_vec.push(self.servo_top_pos as u8);
-                            self.send_vec.push((self.stepper_pos >> 24) as u8);
-                            self.send_vec.push((self.stepper_pos >> 16) as u8);
-                            self.send_vec.push((self.stepper_pos >> 8) as u8);
-                            self.send_vec.push(self.stepper_pos as u8);
 
-                            self.udp_socket.send_to(&self.send_vec, &self.send_to).expect("Failed to send data");
 
-                            let mut buf = [0u8; 1024]; // You can use a fixed-size array as buffer
+                            if self.flag {
+                                // Send the data
+                                self.send_vec.clear();
+                                self.send_vec.push(self.servo_top.to_be_bytes()[0]);
+                                self.send_vec.push(self.servo_top.to_be_bytes()[1]);
+                                self.send_vec.push(self.servo_shoulder.to_be_bytes()[0]);
+                                self.send_vec.push(self.servo_shoulder.to_be_bytes()[1]);
+                                self.send_vec.push(self.servo_upper.to_be_bytes()[0]);
+                                self.send_vec.push(self.servo_upper.to_be_bytes()[1]);
+                                self.send_vec.push(self.servo_elbow.to_be_bytes()[0]);
+                                self.send_vec.push(self.servo_elbow.to_be_bytes()[1]);
+                                self.send_vec.push(self.servo_lower.to_be_bytes()[0]);
+                                self.send_vec.push(self.servo_lower.to_be_bytes()[1]);
 
+                                self.udp_socket.send_to(&self.send_vec, &self.send_to).expect("Failed to send data");
+                            }
+
+                            let mut buf = [0u8; 1024];
                             match self.udp_socket.recv_from(&mut buf) {
                                 Ok((amt, _src)) => {
                                     // Received data
@@ -264,7 +353,18 @@ fn check_ip_string(ip_string: &String) -> bool{
     true
 }
 
-
+fn flag_setting_slider(
+    ui: &mut egui::Ui,
+    value: &mut u16,
+    range: std::ops::RangeInclusive<u16>,
+    text: &str,
+    flag: &mut bool,
+) {
+    let slider_response = ui.add(egui::Slider::new(value, range).text(text));
+    if slider_response.changed() {
+        *flag = true; // Set the flag when the slider is used.
+    }
+}
 
 // Code for egui toggle switch.
 fn toggle_ui(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
