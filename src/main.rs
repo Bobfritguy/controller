@@ -10,7 +10,6 @@ use network::Network;
 use models::SharedState; // Use this if you have a separate models.rs
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
-use eframe::egui;
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init();
