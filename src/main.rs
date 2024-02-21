@@ -2,7 +2,7 @@ mod controller;
 mod gui;
 mod network;
 mod models;
-mod arm; // Import this if you have a separate models.rs
+mod arm;
 
 use controller::Controller;
 use gui::Gui;

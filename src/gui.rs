@@ -3,13 +3,14 @@ use std::sync::{Arc, Mutex};
 use crate::controller::Controller;
 use crate::models::SharedState;
 
+
 pub struct Gui {
     controller: Controller, // Assuming Controller has necessary UI related methods
 }
 
 impl Gui {
-    pub fn new(shared_state: Arc<Mutex<SharedState>>) -> Self {
-        // Initialize the Controller with the shared state
+    pub fn  new(shared_state: Arc<Mutex<SharedState>>) -> Self {
+
         let controller = Controller::new(shared_state);
 
         Gui {

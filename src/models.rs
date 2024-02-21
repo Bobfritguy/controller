@@ -1,8 +1,8 @@
-use std::net::IpAddr;
+use std::net::{SocketAddr};
 
 pub struct SharedState {
     // Fields go here
-    pub discovered_ips: Vec<IpAddr>,
+    pub discovered_ips: Vec<SocketAddr>,
     pub service: String,
 }
 

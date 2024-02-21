@@ -1,9 +1,9 @@
+
 use crate::network;
 use eframe::egui;
 use crate::arm;
 use std::net::UdpSocket;
-use std::io::ErrorKind;
-use std::ops::{Range, RangeInclusive};
+use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 use eframe::egui::Ui;
 use crate::models::{SharedState, Mode};
@@ -25,12 +25,16 @@ pub struct Controller {
     flag: bool,
     shared_state: Arc<Mutex<SharedState>>,
     arm: arm::Arm,
+    target_i: f64,
+    target_j: f64,
+    target_k: f64,
 }
 
 impl Controller {
     pub fn new(shared_state: Arc<Mutex<SharedState>>) -> Self {
         let udp_socket = UdpSocket::bind("0.0.0.0:8080").expect("Failed to bind socket");
         udp_socket.set_nonblocking(true).expect("Failed to set nonblocking");
+
 
         Controller {
             ip_addr_string: "0.0.0.0:1234".to_owned(),
@@ -49,10 +53,13 @@ impl Controller {
             flag: true,
             shared_state,
             arm: arm::Arm::new(1.0, 1.0),
+            target_i: 1.0,
+            target_j: 1.0,
+            target_k: 1.0,
         }
     }
 
-    pub fn render_ui(&mut self, ui: &mut egui::Ui) {
+    pub fn render_ui(&mut self, ui: &mut Ui) {
         // Heading
         ui.heading("Limb Controller");
 
@@ -61,7 +68,7 @@ impl Controller {
             let name_label = ui.label("IP Address: ");
             ui.text_edit_singleline(&mut self.ip_addr_string).labelled_by(name_label.id);
             Controller::mdns_button(ui, &mut self.ip_addr_string, &self.shared_state);
-            self.is_ip_addr = network::check_ip_string(&self.ip_addr_string);
+            self.is_ip_addr = network::Network::check_ip_string(&self.ip_addr_string);
             ui.label(if self.is_ip_addr { "Valid" } else { "Invalid" });
             if self.is_ip_addr {
                 if ui.button("Apply").clicked() {
@@ -101,6 +108,14 @@ impl Controller {
 
     fn render_sending_mode_ui(&mut self, ui: &mut Ui) {
         ui.label(format!("Sending Data to {}", &self.send_to));
+        if ui.button("Reset").clicked() {
+            *self.arm.servo_a_horiz() = (self.servo_top_range.end() + self.servo_top_range.start()) / 2;
+            *self.arm.servo_a_vert() = (self.servo_shoulder_range.end() + self.servo_shoulder_range.start()) / 2;
+            *self.arm.servo_b_horiz() = (self.servo_upper_range.end() + self.servo_upper_range.start()) / 2;
+            *self.arm.servo_b_vert() = (self.servo_elbow_range.end() + self.servo_elbow_range.start()) / 2;
+            *self.arm.servo_c_horiz() = (self.servo_lower_range.end() + self.servo_lower_range.start()) / 2;
+            self.flag = true;
+        }
         // Servo control sliders
         Controller::render_servo_control(ui, &self.servo_top_range, self.arm.servo_a_horiz(), "Top Servo", &mut self.flag);
         Controller::render_servo_control(ui, &self.servo_shoulder_range, self.arm.servo_a_vert(), "Shoulder Servo", &mut self.flag);
@@ -126,7 +141,7 @@ impl Controller {
         }
     }
 
-    fn render_servo_control(ui: &mut egui::Ui, range: &RangeInclusive<u16>, angle: &mut u16, label: &str, flag: &mut bool) {
+    fn render_servo_control(ui: &mut Ui, range: &RangeInclusive<u16>, angle: &mut u16, label: &str, flag: &mut bool) {
         ui.horizontal(|ui| {
             // Label for the servo
             ui.label(format!("{} Position:", label));
@@ -139,25 +154,34 @@ impl Controller {
                 "°",
                 flag,
             );
+            if ui.button("-").clicked() {
+                *angle = (*angle - 1).max(*range.start());
+                *flag = true;
+            }
+            if ui.button("+").clicked() {
+                *angle = (*angle + 1).min(*range.end());
+                *flag = true;
+            }
         });
+
         ui.end_row(); // End the current row and prepare for the next
     }
 
     fn flag_setting_slider(
-        ui: &mut egui::Ui,
+        ui: &mut Ui,
         value: &mut u16,
-        range: std::ops::RangeInclusive<u16>,
+        range: RangeInclusive<u16>,
         suffix: &str,
         flag: &mut bool,
     ) {
         let slider_response = ui.add(egui::Slider::new(value, range).suffix(suffix));
         if slider_response.changed() {
-            *flag = true; // Set the flag when the slider is used.
+            *flag = true;
         }
     }
 
     // Code for egui toggle switch.
-    fn toggle_ui(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    fn toggle_ui(ui: &mut Ui, on: &mut bool) -> egui::Response {
         let desired_size = ui.spacing().interact_size.y * egui::vec2(2.0, 1.0);
         let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
         if response.clicked() {
@@ -190,7 +214,7 @@ impl Controller {
     /// ui.add(toggle(&mut my_bool));
     /// ```
     fn toggle(on: &mut bool) -> impl egui::Widget + '_ {
-        move |ui: &mut egui::Ui| Controller::toggle_ui(ui, on)
+        move |ui: &mut Ui| Controller::toggle_ui(ui, on)
     }
 
     fn send_data(&mut self) -> Result<(), std::io::Error> {
@@ -211,7 +235,7 @@ impl Controller {
 
         Ok(())
     }
-    fn render_arm_status_ui(&self, ui: &mut Ui) {
+    fn render_arm_status_ui(&mut self, ui: &mut Ui) {
         ui.add(egui::Separator::default());
         ui.heading("Arm Status");
         let (mut i, mut j, mut k) = self.arm.get_ijk();
@@ -225,6 +249,21 @@ impl Controller {
             ui.label("k:");
             ui.add(egui::DragValue::new(&mut k).speed(0.0).max_decimals(2));
         });
+
+        ui.horizontal(|ui| {
+            ui.label("target i:");
+            ui.add(egui::DragValue::new(&mut self.target_i).speed(0.1).max_decimals(2));
+            ui.add(egui::Separator::default());
+            ui.label("target j:");
+            ui.add(egui::DragValue::new(&mut self.target_j).speed(0.1).max_decimals(2));
+            ui.add(egui::Separator::default());
+            ui.label("target k:");
+            ui.add(egui::DragValue::new(&mut self.target_k).speed(0.1).max_decimals(2));
+        });
+        if ui.button("Apply").clicked() {
+            //self.arm.calculate_inverse_kinematics(self.target_i, self.target_j, self.target_k, 0.0001);
+        }
+        // Controller::plot_arm(ui, 64.0);
     }
 
     fn render_settings(&mut self, ui: &mut Ui) {
@@ -267,22 +306,82 @@ impl Controller {
                 self.servo_lower_range = 0..=lower_limit;
             }
         });
+        ui.add(egui::Separator::default());
+        let mdns_label = ui.label("mDNS Service Address: (NON-FUNCTIONAL SETTING)");
+        let mut shared_state_lock = self.shared_state.lock().unwrap();
+        let mut mdns_address = shared_state_lock.service.clone();
+        ui.text_edit_singleline(&mut mdns_address).labelled_by(mdns_label.id);
+        if self.ip_addr_string != mdns_address{
+            shared_state_lock.set_service(mdns_address)
+        }
     }
 
-    fn mdns_button(ui: &mut Ui, ip: &mut String, shared_state: &Arc<Mutex<SharedState>>) {
-        let mut shared_state_lock = shared_state.lock().unwrap();
-        match shared_state_lock.discovered_ips.first()
-            .map(|ip| ip.to_string()){
+    // fn plot_arm(ui: &mut Ui, graph_size: f64) -> egui::Response {
+    //     use egui_plot::{Line, PlotPoints};
+    //     let n = 128;
+    //     let line_points: PlotPoints = (0..=n)
+    //         .map(|i| {
+    //             use std::f64::consts::TAU;
+    //             let x = egui::remap(i as f64, 0.0..=n as f64, -TAU..=TAU);
+    //             [x, x.sin()]
+    //         })
+    //         .collect();
+    //     let line = Line::new(line_points);
+    //
+    //     let cos_points: PlotPoints = (0..=n)
+    //         .map(|i| {
+    //             use std::f64::consts::TAU;
+    //             let x = egui::remap(i as f64, 0.0..=n as f64, -TAU..=TAU);
+    //             [x, x.cos()]
+    //         })
+    //         .collect();
+    //     let cos_line = Line::new(cos_points);
+    //
+    //     // Make sure to return a Response from the last UI element
+    //     ui.vertical_centered(|ui| {
+    //         ui.set_max_width(graph_size); // Control the width
+    //
+    //         let plot_response = egui_plot::Plot::new("example_plot")
+    //             .height(graph_size)
+    //             .show_axes(true)
+    //             .data_aspect(1.0)
+    //             .show(ui, |plot_ui| plot_ui.line(line))
+    //             .response;
+    //
+    //         egui_plot::Plot::new("example_plot_cos")
+    //             .height(graph_size / 2.0)
+    //             .show_axes(true)
+    //             .data_aspect(1.0)
+    //             .show(ui, |plot_ui| plot_ui.line(cos_line))
+    //             .response;
+    //
+    //         // Return the response from the first plot or the second, as needed.
+    //         // Here, returning the plot_response just to satisfy the return type.
+    //         // Adjust based on which response you actually need to use.
+    //         plot_response
+    //     })
+    //
+    // }
+
+
+
+    fn mdns_button(ui: &mut Ui, sock: &mut String, shared_state: &Arc<Mutex<SharedState>>) {
+        // Acquire the lock and immediately scope it to limit its duration
+        let first_ip_option = {
+            let shared_state_lock = shared_state.lock().unwrap();
+            shared_state_lock.discovered_ips.first().cloned() // Clone the first IP if it exists
+        };
+
+        // Use the first IP option outside the lock scope
+        match first_ip_option {
             Some(mdns_ip) => {
-                if ui.button("mDNS").clicked(){
-                    *ip = mdns_ip
+                if ui.button("mDNS").clicked() {
+                    *sock = mdns_ip.to_string();
                 }
             }
             None => {}
         }
-
     }
-
 }
 
 
