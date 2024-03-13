@@ -15,13 +15,17 @@ futures-util = "0.3.30"
 mdns = "3.0.0"
 approx = "0.5.1"
 nalgebra = "0.32.3"
-serde = "1.0.195"
+
 log = "0.4.20"
 bytemuck = "1.14.0"
-egui_glow = "0.26.2"
 plotters = { version = "0.3.5", features = [] }
-image = "0.24.8"
+image = "0.25.0"
 egui_plot = "0.26.2"
+egui-plotter = { git = "https://github.com/bionetlabs/egui-plotter", branch = "main" }
+
+
+
+
 
 [target.x86_64-pc-windows-gnu]
 linker = "/usr/bin/x86_64-w64-mingw32-gcc"

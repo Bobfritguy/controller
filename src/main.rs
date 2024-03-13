@@ -3,6 +3,7 @@ mod gui;
 mod network;
 mod models;
 mod arm;
+mod plot;
 
 use controller::Controller;
 use gui::Gui;
@@ -35,7 +36,9 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "Robotic Limb Controller",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+
             Box::new(Gui::new(shared_state.clone()))
         }),
     )

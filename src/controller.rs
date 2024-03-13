@@ -1,25 +1,34 @@
 
+use std::borrow::Borrow;
+use crate::plot::{generate_plot};
 use crate::network;
-use eframe::egui;
 use crate::arm;
 use std::net::UdpSocket;
 use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
-use eframe::egui::Ui;
+use eframe::egui;
+use eframe::egui::{Ui, Separator, ComboBox, Slider, Sense, vec2, WidgetType, WidgetInfo, DragValue, Response, pos2, lerp, Widget, Image, ColorImage, TextureOptions};
+use plotters::prelude::*;
+
+use plotters::drawing::IntoDrawingArea;
+use plotters::element::Rectangle;
 use crate::models::{SharedState, Mode};
+const MOVE_SCALE: f32 = 0.01;
+const SCROLL_SCALE: f32 = 0.001;
 
 pub struct Controller {
     ip_addr_string: String,
     is_ip_addr: bool,
     send_to: String,
     udp_socket: UdpSocket,
-    servo_top_range: RangeInclusive<u16>,
-    servo_shoulder_range: RangeInclusive<u16>,
-    servo_upper_range: RangeInclusive<u16>,
-    servo_elbow_range: RangeInclusive<u16>,
-    servo_lower_range: RangeInclusive<u16>,
+    servo_top_range: RangeInclusive<f64>,
+    servo_shoulder_range: RangeInclusive<f64>,
+    servo_upper_range: RangeInclusive<f64>,
+    servo_elbow_range: RangeInclusive<f64>,
+    servo_lower_range: RangeInclusive<f64>,
     send_vec: Vec<u8>,
     receive_vec: Vec<u8>,
+    received_values: Vec<f64>,
     mode: Mode,
     send: bool,
     flag: bool,
@@ -28,6 +37,8 @@ pub struct Controller {
     target_i: f64,
     target_j: f64,
     target_k: f64,
+    plot_yaw: f64,
+    plot_scale: f64,
 }
 
 impl Controller {
@@ -41,13 +52,14 @@ impl Controller {
             is_ip_addr: true,
             send_to: "0.0.0.0:1234".to_owned(),
             udp_socket,
-            servo_top_range: 0..=180,
-            servo_shoulder_range: 0..=180,
-            servo_upper_range: 0..=180,
-            servo_elbow_range: 0..=180,
-            servo_lower_range: 0..=180,
+            servo_top_range: 0.0..=180.0,
+            servo_shoulder_range: 0.0..=180.0,
+            servo_upper_range: 0.0..=180.0,
+            servo_elbow_range: 0.0..=180.0,
+            servo_lower_range: 0.0..=180.0,
             send_vec: Vec::new(),
-            receive_vec: Vec::new(),
+            receive_vec: vec![0; 11],
+            received_values: vec![0.0; 5],
             mode: Mode::Stopped,
             send: true,
             flag: true,
@@ -56,6 +68,8 @@ impl Controller {
             target_i: 1.0,
             target_j: 1.0,
             target_k: 1.0,
+            plot_yaw: 0.5,
+            plot_scale: 0.55,
         }
     }
 
@@ -78,8 +92,8 @@ impl Controller {
         });
 
         // Mode selection
-        ui.add(egui::Separator::default());
-        egui::ComboBox::from_label("Choose Mode")
+        ui.add(Separator::default());
+        ComboBox::from_label("Choose Mode")
             .selected_text(format!("{:?}", self.mode))
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut self.mode, Mode::Sending, "Sending");
@@ -92,7 +106,9 @@ impl Controller {
         match self.mode {
             Mode::Sending => {
                 self.render_sending_mode_ui(ui);
+                self.render_receive_ui();
                 self.render_arm_status_ui(ui);
+                self.render_plot(ui);
             }
             Mode::Receiving => {
                 ui.label("Stopped");
@@ -109,11 +125,11 @@ impl Controller {
     fn render_sending_mode_ui(&mut self, ui: &mut Ui) {
         ui.label(format!("Sending Data to {}", &self.send_to));
         if ui.button("Reset").clicked() {
-            *self.arm.servo_a_horiz() = (self.servo_top_range.end() + self.servo_top_range.start()) / 2;
-            *self.arm.servo_a_vert() = (self.servo_shoulder_range.end() + self.servo_shoulder_range.start()) / 2;
-            *self.arm.servo_b_horiz() = (self.servo_upper_range.end() + self.servo_upper_range.start()) / 2;
-            *self.arm.servo_b_vert() = (self.servo_elbow_range.end() + self.servo_elbow_range.start()) / 2;
-            *self.arm.servo_c_horiz() = (self.servo_lower_range.end() + self.servo_lower_range.start()) / 2;
+            *self.arm.servo_a_horiz() = (self.servo_top_range.end() + self.servo_top_range.start()) / 2.0;
+            *self.arm.servo_a_vert() = (self.servo_shoulder_range.end() + self.servo_shoulder_range.start()) / 2.0;
+            *self.arm.servo_b_horiz() = (self.servo_upper_range.end() + self.servo_upper_range.start()) / 2.0;
+            *self.arm.servo_b_vert() = *self.servo_elbow_range.start();
+            *self.arm.servo_c_horiz() = (self.servo_lower_range.end() + self.servo_lower_range.start()) / 2.0;
             self.flag = true;
         }
         // Servo control sliders
@@ -127,7 +143,7 @@ impl Controller {
 
         ui.horizontal(|ui| {
             ui.add(Controller::toggle(&mut self.send));
-            ui.add(egui::Separator::default());
+            ui.add(Separator::default());
             ui.label(if self.send { "Auto Send" } else { "Manual Send" });
         });
 
@@ -135,13 +151,32 @@ impl Controller {
             if ui.button("Send").clicked() {
                 self.send_data().expect("Failed to send data");
             }
-        } else if self.flag{
+        } else if self.flag {
             self.send_data().expect("Failed to send data");
-            self.flag = false;
         }
+
+        // Receive data
+        match self.udp_socket.recv_from(&mut self.receive_vec) {
+            Ok(_) => {}
+            Err(_) => {}
+        };
+        for (i, chunk) in self.receive_vec.chunks_exact(2).enumerate() { // Divides the received data into 2 byte chunks, and iterates over them
+            self.received_values[i] = chunk.try_into()
+                .map(|bytes: [u8; 2]| u16::from_be_bytes(bytes) as f64) // Convert bytes to u16, then to f64
+                .unwrap_or(-1.0); // Default to -1.0 if conversion fails, indicating a problem converting from bytes to u16
+            if self.received_values == vec![
+                *self.arm.servo_a_horiz(),
+                *self.arm.servo_a_vert(),
+                *self.arm.servo_b_horiz(),
+                *self.arm.servo_b_vert()
+            ] {
+                self.flag = false;
+            }
+        }
+        ui.label(format!("Received {:?}, flag set to: {}", &self.received_values, &self.flag));
     }
 
-    fn render_servo_control(ui: &mut Ui, range: &RangeInclusive<u16>, angle: &mut u16, label: &str, flag: &mut bool) {
+    fn render_servo_control(ui: &mut Ui, range: &RangeInclusive<f64>, angle: &mut f64, label: &str, flag: &mut bool) {
         ui.horizontal(|ui| {
             // Label for the servo
             ui.label(format!("{} Position:", label));
@@ -155,40 +190,39 @@ impl Controller {
                 flag,
             );
             if ui.button("-").clicked() {
-                *angle = (*angle - 1).max(*range.start());
+                *angle = (*angle - 1.0).max(*range.start());
                 *flag = true;
             }
             if ui.button("+").clicked() {
-                *angle = (*angle + 1).min(*range.end());
+                *angle = (*angle + 1.0).min(*range.end());
                 *flag = true;
             }
         });
-
         ui.end_row(); // End the current row and prepare for the next
     }
 
     fn flag_setting_slider(
         ui: &mut Ui,
-        value: &mut u16,
-        range: RangeInclusive<u16>,
+        value: &mut f64,
+        range: RangeInclusive<f64>,
         suffix: &str,
         flag: &mut bool,
     ) {
-        let slider_response = ui.add(egui::Slider::new(value, range).suffix(suffix));
+        let slider_response = ui.add(Slider::new(value, range).suffix(suffix));
         if slider_response.changed() {
             *flag = true;
         }
     }
 
     // Code for egui toggle switch.
-    fn toggle_ui(ui: &mut Ui, on: &mut bool) -> egui::Response {
-        let desired_size = ui.spacing().interact_size.y * egui::vec2(2.0, 1.0);
-        let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    fn toggle_ui(ui: &mut Ui, on: &mut bool) -> Response {
+        let desired_size = ui.spacing().interact_size.y * vec2(2.0, 1.0);
+        let (rect, mut response) = ui.allocate_exact_size(desired_size, Sense::click());
         if response.clicked() {
             *on = !*on;
             response.mark_changed();
         }
-        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, *on, ""));
+        response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, *on, ""));
 
         if ui.is_rect_visible(rect) {
             let how_on = ui.ctx().animate_bool(response.id, *on);
@@ -197,12 +231,11 @@ impl Controller {
             let radius = 0.5 * rect.height();
             ui.painter()
                 .rect(rect, radius, visuals.bg_fill, visuals.bg_stroke);
-            let circle_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
-            let center = egui::pos2(circle_x, rect.center().y);
+            let circle_x = lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
+            let center = pos2(circle_x, rect.center().y);
             ui.painter()
                 .circle(center, 0.75 * radius, visuals.bg_fill, visuals.fg_stroke);
         }
-
         response
     }
 
@@ -213,52 +246,66 @@ impl Controller {
     /// ``` ignore
     /// ui.add(toggle(&mut my_bool));
     /// ```
-    fn toggle(on: &mut bool) -> impl egui::Widget + '_ {
+    fn toggle(on: &mut bool) -> impl Widget + '_ {
         move |ui: &mut Ui| Controller::toggle_ui(ui, on)
     }
 
     fn send_data(&mut self) -> Result<(), std::io::Error> {
-        // Send the data
+        // Clear the previous data
         self.send_vec.clear();
+
+        // Add the control signal type
         self.send_vec.push(0);
-        self.send_vec.push(self.arm.servo_a_horiz().to_be_bytes()[0]);
-        self.send_vec.push(self.arm.servo_a_horiz().to_be_bytes()[1]);
-        self.send_vec.push(self.arm.servo_a_vert().to_be_bytes()[0]);
-        self.send_vec.push(self.arm.servo_a_vert().to_be_bytes()[1]);
-        self.send_vec.push(self.arm.servo_b_horiz().to_be_bytes()[0]);
-        self.send_vec.push(self.arm.servo_b_horiz().to_be_bytes()[1]);
-        self.send_vec.push(self.arm.servo_b_vert().to_be_bytes()[0]);
-        self.send_vec.push(self.arm.servo_b_vert().to_be_bytes()[1]);
-        self.send_vec.push(self.arm.servo_c_horiz().to_be_bytes()[0]);
-        self.send_vec.push(self.arm.servo_c_horiz().to_be_bytes()[1]);
+
+        // Helper function to convert f64 to u16 and append it to the vector
+        let append_f64_as_u16 = |vec: &mut Vec<u8>, value: &mut f64| {
+            // Ensure the value is within the valid range for u16
+            if *value >= 0.0 && *value <= u16::MAX as f64 {
+                // Safe to unwrap because we've already checked the range
+                let bytes = (*value as u16).to_be_bytes();
+                vec.extend_from_slice(&bytes);
+            } else {
+                vec.extend_from_slice(&0u16.to_be_bytes());
+            }
+        };
+
+        // Append servo values to send_vec
+        append_f64_as_u16(&mut self.send_vec, self.arm.servo_a_horiz());
+        append_f64_as_u16(&mut self.send_vec, self.arm.servo_a_vert());
+        append_f64_as_u16(&mut self.send_vec, self.arm.servo_b_horiz());
+        append_f64_as_u16(&mut self.send_vec, self.arm.servo_b_vert());
+        append_f64_as_u16(&mut self.send_vec, self.arm.servo_c_horiz());
+
+        // Send the data
         self.udp_socket.send_to(&self.send_vec, &self.send_to)?;
 
         Ok(())
     }
+
     fn render_arm_status_ui(&mut self, ui: &mut Ui) {
-        ui.add(egui::Separator::default());
+        ui.add(Separator::default());
         ui.heading("Arm Status");
         let (mut i, mut j, mut k) = self.arm.get_ijk();
         ui.horizontal(|ui| {
             ui.label("i:");
-            ui.add(egui::DragValue::new(&mut i).speed(0.0).max_decimals(2));
-            ui.add(egui::Separator::default());
+            ui.add(DragValue::new(&mut i).speed(0.0).max_decimals(2));
+            ui.add(Separator::default());
             ui.label("j:");
-            ui.add(egui::DragValue::new(&mut j).speed(0.0).max_decimals(2));
-            ui.add(egui::Separator::default());
+            ui.add(DragValue::new(&mut j).speed(0.0).max_decimals(2));
+            ui.add(Separator::default());
             ui.label("k:");
-            ui.add(egui::DragValue::new(&mut k).speed(0.0).max_decimals(2));
+            ui.add(DragValue::new(&mut k).speed(0.0).max_decimals(2));
         });
 
         ui.horizontal(|ui| {
             ui.label("target i:");
-            ui.add(egui::DragValue::new(&mut self.target_i).speed(0.1).max_decimals(2));
-            ui.add(egui::Separator::default());
+            ui.add(DragValue::new(&mut self.target_i).speed(0.1).max_decimals(2));
+            ui.add(Separator::default());
             ui.label("target j:");
-            ui.add(egui::DragValue::new(&mut self.target_j).speed(0.1).max_decimals(2));
-            ui.add(egui::Separator::default());
+            ui.add(DragValue::new(&mut self.target_j).speed(0.1).max_decimals(2));
+            ui.add(Separator::default());
             ui.label("target k:");
-            ui.add(egui::DragValue::new(&mut self.target_k).speed(0.1).max_decimals(2));
+            ui.add(DragValue::new(&mut self.target_k).speed(0.1).max_decimals(2));
         });
         if ui.button("Apply").clicked() {
             //self.arm.calculate_inverse_kinematics(self.target_i, self.target_j, self.target_k, 0.0001);
@@ -271,42 +318,74 @@ impl Controller {
         ui.label("Arm Lengths:");
         ui.horizontal(|ui| {
             ui.label("Upper Length:");
-            ui.add(egui::DragValue::new(self.arm.settable_arm_lengths().0).speed(0.05).max_decimals(3).suffix(" cm").clamp_range(0.0..=100.0));
-            ui.add(egui::Separator::default());
+            ui.add(DragValue::new(self.arm.settable_arm_lengths().0).speed(0.05).max_decimals(3).suffix(" m").clamp_range(0.0..=100.0));
+            ui.add(Separator::default());
             ui.label("Lower Length:");
-            ui.add(egui::DragValue::new(self.arm.settable_arm_lengths().1).speed(0.05).max_decimals(3).suffix(" cm").clamp_range(0.0..=100.0));
+            ui.add(DragValue::new(self.arm.settable_arm_lengths().1).speed(0.05).max_decimals(3).suffix(" m").clamp_range(0.0..=100.0));
         });
-        ui.label("\nArm Angle Limits:");
+        let mut top_limit = *self.servo_top_range.end();
+        let mut shoulder_limit = *self.servo_shoulder_range.end();
+        let mut upper_limit = *self.servo_upper_range.end();
+        let mut elbow_limit = *self.servo_elbow_range.end();
+        let mut lower_limit = *self.servo_lower_range.end();
+        let mut top_limit_lower = *self.servo_top_range.start();
+        let mut shoulder_limit_lower = *self.servo_shoulder_range.start();
+        let mut upper_limit_lower = *self.servo_upper_range.start();
+        let mut elbow_limit_lower = *self.servo_elbow_range.start();
+        let mut lower_limit_lower = *self.servo_lower_range.start();
+        ui.label("\nArm Angle Upper Limits:");
         ui.horizontal(|ui| {
             // Temporary variables to hold the current upper limits
-            let mut top_limit = *self.servo_top_range.end();
-            let mut shoulder_limit = *self.servo_shoulder_range.end();
-            let mut upper_limit = *self.servo_upper_range.end();
-            let mut elbow_limit = *self.servo_elbow_range.end();
-            let mut lower_limit = *self.servo_lower_range.end();
-            ui.add(egui::Separator::default());
+
+            ui.add(Separator::default());
             ui.label("Servo Top:");
-            if ui.add(egui::DragValue::new(&mut top_limit).speed(1).suffix("°").clamp_range(0..=270)).changed() {
-                self.servo_top_range = 0..=top_limit;
+            if ui.add(DragValue::new(&mut top_limit).speed(1).suffix("°").clamp_range(0..=270)).changed() {
+                self.servo_top_range = top_limit_lower..=top_limit;
             }
             ui.label("Servo Shoulder:");
-            if ui.add(egui::DragValue::new(&mut shoulder_limit).speed(1).suffix("°").clamp_range(0..=270)).changed() {
-                self.servo_shoulder_range = 0..=shoulder_limit;
+            if ui.add(DragValue::new(&mut shoulder_limit).speed(1).suffix("°").clamp_range(0..=270)).changed() {
+                self.servo_shoulder_range = shoulder_limit_lower..=shoulder_limit;
             }
             ui.label("Servo Upper:");
-            if ui.add(egui::DragValue::new(&mut upper_limit).speed(1).suffix("°").clamp_range(0..=270)).changed() {
-                self.servo_upper_range = 0..=upper_limit;
+            if ui.add(DragValue::new(&mut upper_limit).speed(1).suffix("°").clamp_range(0..=270)).changed() {
+                self.servo_upper_range = upper_limit_lower..=upper_limit;
             }
             ui.label("Servo Elbow:");
-            if ui.add(egui::DragValue::new(&mut elbow_limit).speed(1).suffix("°").clamp_range(0..=270)).changed() {
-                self.servo_elbow_range = 0..=elbow_limit;
+            if ui.add(DragValue::new(&mut elbow_limit).speed(1).suffix("°").clamp_range(0..=270)).changed() {
+                self.servo_elbow_range = elbow_limit_lower..=elbow_limit;
             }
             ui.label("Servo Lower:");
-            if ui.add(egui::DragValue::new(&mut lower_limit).speed(1).suffix("°").clamp_range(0..=270)).changed() {
-                self.servo_lower_range = 0..=lower_limit;
+            if ui.add(DragValue::new(&mut lower_limit).speed(1).suffix("°").clamp_range(0..=270)).changed() {
+                self.servo_lower_range = lower_limit_lower..=lower_limit;
             }
         });
-        ui.add(egui::Separator::default());
+        ui.add(Separator::default());
+        ui.label("Servo Top Upper Limit:");
+        ui.horizontal(|ui| {
+            // Temporary variables to hold the current upper limits
+            ui.add(Separator::default());
+            ui.label("Servo Top:");
+            if ui.add(DragValue::new(&mut top_limit_lower).speed(1).suffix("°").clamp_range(0..=270)).changed() {
+                self.servo_top_range = top_limit_lower..=top_limit;
+            }
+            ui.label("Servo Shoulder:");
+            if ui.add(DragValue::new(&mut shoulder_limit_lower).speed(1).suffix("°").clamp_range(0..=270)).changed() {
+                self.servo_shoulder_range = shoulder_limit_lower..=shoulder_limit;
+            }
+            ui.label("Servo Upper:");
+            if ui.add(DragValue::new(&mut upper_limit_lower).speed(1).suffix("°").clamp_range(0..=270)).changed() {
+                self.servo_upper_range = upper_limit_lower..=upper_limit;
+            }
+            ui.label("Servo Elbow:");
+            if ui.add(DragValue::new(&mut elbow_limit_lower).speed(1).suffix("°").clamp_range(0..=270)).changed() {
+                self.servo_elbow_range = elbow_limit_lower..=elbow_limit;
+            }
+            ui.label("Servo Lower:");
+            if ui.add(DragValue::new(&mut lower_limit_lower).speed(1).suffix("°").clamp_range(0..=270)).changed() {
+                self.servo_lower_range = lower_limit_lower..=lower_limit;
+            }
+        });
+        ui.add(Separator::default());
         let mdns_label = ui.label("mDNS Service Address: (NON-FUNCTIONAL SETTING)");
         let mut shared_state_lock = self.shared_state.lock().unwrap();
         let mut mdns_address = shared_state_lock.service.clone();
@@ -316,54 +395,18 @@ impl Controller {
         }
     }
 
-    // fn plot_arm(ui: &mut Ui, graph_size: f64) -> egui::Response {
-    //     use egui_plot::{Line, PlotPoints};
-    //     let n = 128;
-    //     let line_points: PlotPoints = (0..=n)
-    //         .map(|i| {
-    //             use std::f64::consts::TAU;
-    //             let x = egui::remap(i as f64, 0.0..=n as f64, -TAU..=TAU);
-    //             [x, x.sin()]
-    //         })
-    //         .collect();
-    //     let line = Line::new(line_points);
-    //
-    //     let cos_points: PlotPoints = (0..=n)
-    //         .map(|i| {
-    //             use std::f64::consts::TAU;
-    //             let x = egui::remap(i as f64, 0.0..=n as f64, -TAU..=TAU);
-    //             [x, x.cos()]
-    //         })
-    //         .collect();
-    //     let cos_line = Line::new(cos_points);
-    //
-    //     // Make sure to return a Response from the last UI element
-    //     ui.vertical_centered(|ui| {
-    //         ui.set_max_width(graph_size); // Control the width
-    //
-    //         let plot_response = egui_plot::Plot::new("example_plot")
-    //             .height(graph_size)
-    //             .show_axes(true)
-    //             .data_aspect(1.0)
-    //             .show(ui, |plot_ui| plot_ui.line(line))
-    //             .response;
-    //
-    //         egui_plot::Plot::new("example_plot_cos")
-    //             .height(graph_size / 2.0)
-    //             .show_axes(true)
-    //             .data_aspect(1.0)
-    //             .show(ui, |plot_ui| plot_ui.line(cos_line))
-    //             .response;
-    //
-    //         // Return the response from the first plot or the second, as needed.
-    //         // Here, returning the plot_response just to satisfy the return type.
-    //         // Adjust based on which response you actually need to use.
-    //         plot_response
-    //     })
-    //
-    // }
+    fn render_receive_ui(&mut self) {
+        // Receive data
+        match self.udp_socket.recv_from(&mut self.receive_vec) {
+            Ok(_) => {}
+            Err(_) => {}
+        };
+        for (i, chunk) in self.receive_vec.chunks_exact(2).enumerate() {
+            let adc_value = u16::from_be_bytes(chunk.try_into().unwrap());
+            // Process these !TODO
+        }
 
-
+    }
 
     fn mdns_button(ui: &mut Ui, sock: &mut String, shared_state: &Arc<Mutex<SharedState>>) {
         // Acquire the lock and immediately scope it to limit its duration
@@ -382,6 +425,36 @@ impl Controller {
             None => {}
         }
     }
+
+
+    fn render_plot(&mut self, ui: &mut Ui) {
+        let w = 640;
+        let h = 640;
+        // Generate the buffer
+        let mut buf: Vec<u8> = vec![0u8; w * h * 3];
+        let image_data = generate_plot(&mut buf, w as u32, h as u32, &self.arm, self.plot_yaw, self.plot_scale);
+
+        // Do the above but handle with a match
+        match image_data {
+            Ok(_) => {
+                let image = ColorImage::from_rgb([w, h], &mut buf);
+
+                // Thanks to https://github.com/emilk/egui/discussions/3431
+                // you must keep the handle, if the handle is destroyed so the texture will be destroyed as well
+                let handle = ui.ctx().load_texture("Arm Positions", image.clone(), TextureOptions::default());
+                let sized_image = egui::load::SizedTexture::new(handle.id(), vec2(*&image.size[0] as f32, *&image.size[1] as f32));
+                let image = Image::from_texture(sized_image);
+                ui.add(image);
+                ui.add(Slider::new(&mut self.plot_yaw, 0.0..=5.0).text("Yaw"));
+                ui.add(Slider::new(&mut self.plot_scale, 0.0..=2.0).text("Scale"));
+            }
+            Err(e) => {
+                ui.label(format!("Unable to get Image Data: {}", e));
+            }
+        }
+    }
 }
+
+
 
 

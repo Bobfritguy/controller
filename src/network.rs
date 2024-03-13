@@ -1,10 +1,9 @@
 use std::net::SocketAddr;
-use std::net::{UdpSocket, IpAddr};
+use std::net::{IpAddr};
 use std::sync::{Arc, Mutex};
 use mdns::{Record, RecordKind};
 use std::time::Duration;
 use futures_util::{pin_mut, stream::StreamExt};
-use std::str::FromStr;
 use crate::SharedState;
 
 pub struct Network {
